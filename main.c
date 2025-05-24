@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <malloc.h>
 #include <math.h>
+#include <unistd.h>
+
+//todo: fix this goddamn mess
 
 #define WIDTH  230
 #define HEIGHT 110
@@ -33,6 +36,14 @@ typedef struct
 {
     vec4 v1, v2, v3;
 } triangle;
+
+typedef struct {
+    triangle* triangles;
+    int triangle_count;
+
+    float rx, ry, rz;
+    vec4 position;
+} object;
 
 void render_buffer() {
     for (int y = 0; y < HEIGHT - 1; y += 2) {
@@ -168,26 +179,176 @@ void draw_filled_triangle(triangle t, uint8_t brightness) {
     }
 }
 
+vec4 rotate_vec(vec4 v, float rx, float ry, float rz) {
+    float cosy = cosf(rx), siny = sinf(rx);
+    float y1 = v.y * cosy - v.z * siny;
+    float z1 = v.y * siny + v.z * cosy;
+
+    v.y = y1;
+    v.z = z1;
+
+    float cosx = cosf(ry), sinx = sinf(ry);
+    float x2 = v.x * cosx + v.z * sinx;
+    float z2 = -v.x * sinx + v.z * cosx;
+
+    v.x = x2;
+    v.z = z2;
+
+    float cosz = cosf(rz), sinz = sinf(rz);
+    float x3 = v.x * cosz - v.y * sinz;
+    float y3 = v.x * sinz + v.y * cosz;
+
+    v.x = x3;
+    v.y = y3;
+
+    return v;
+}
+
+vec4 project(vec4 v) {
+    if (v.z == 0.0f) v.z = 0.01f;
+    vec4 projected;
+
+    float aspect = (float)WIDTH / (float)HEIGHT;
+
+    projected.x = (v.x / v.z) * WIDTH / 2 + WIDTH / 2;
+    projected.y = (v.y / v.z) * HEIGHT / 2 * aspect + HEIGHT / 2;
+
+    projected.z = v.z;
+    projected.w = 1.0f;
+    return projected;
+}
+
+triangle transform_triangle(triangle t, camera cam) {
+    triangle out;
+
+    vec4 cam_pos = cam.position;
+
+    vec4 verts[3] = { t.v1, t.v2, t.v3 };
+    vec4* out_verts[3] = { &out.v1, &out.v2, &out.v3 };
+
+    for (int i = 0; i < 3; ++i) {
+        vec4 v = verts[i];
+
+        v.x -= cam_pos.x;
+        v.y -= cam_pos.y;
+        v.z -= cam_pos.z;
+
+        v = rotate_vec(v, cam.rx, cam.ry, cam.rz);
+
+        // rzutowanie
+        v = project(v);
+
+        *(out_verts[i]) = v;
+    }
+
+    return out;
+}
+
+triangle transform_single_triangle(triangle t, vec4 pos, float rx, float ry, float rz) {
+    triangle out;
+
+    vec4 verts[3] = { t.v1, t.v2, t.v3 };
+    vec4* out_verts[3] = { &out.v1, &out.v2, &out.v3 };
+
+    for (int i = 0; i < 3; ++i) {
+        vec4 v = verts[i];
+
+        v = rotate_vec(v, rx, ry, rz);
+        v.x += pos.x;
+        v.y += pos.y;
+        v.z += pos.z;
+
+        *(out_verts[i]) = v;
+    }
+
+    return out;
+}
+
+void render_object(object obj, camera cam, uint8_t brightness) {
+    for (int i = 0; i < obj.triangle_count; ++i) {
+        triangle transformed = transform_single_triangle(obj.triangles[i], obj.position, obj.rx, obj.ry, obj.rz);
+        triangle projected = transform_triangle(transformed, cam);
+        draw_triangle(projected, brightness);
+    }
+}
+
+void clear_buffer(){
+    for(int i=0; i<WIDTH*HEIGHT; i++){
+        buffer[i] = 0;
+    }
+}
+
+void clear_console() {
+    printf("\033[2J\033[H");
+}
+
 int main() {
-	init_buffer();
-    fill_gradient();
-	draw_line(WIDTH - 1, 0, 0, HEIGHT - 1, 255);
 
-    triangle test = {
-        .v1 = {50, 50, 50},
-        .v2 = {70, 70, 70},
-        .v3 = {150, 0, 100}
+    init_buffer();
+
+    triangle* cube_tris = malloc(sizeof(triangle) * 12);
+
+    triangle cube_data[12] = {
+        // front
+        { { -5, -5,  5 }, {  5, -5,  5 }, {  5,  5,  5 } },
+        { { -5, -5,  5 }, {  5,  5,  5 }, { -5,  5,  5 } },
+        // back
+        { { -5, -5, -5 }, {  5,  5, -5 }, {  5, -5, -5 } },
+        { { -5, -5, -5 }, { -5,  5, -5 }, {  5,  5, -5 } },
+        // left
+        { { -5, -5, -5 }, { -5, -5,  5 }, { -5,  5,  5 } },
+        { { -5, -5, -5 }, { -5,  5,  5 }, { -5,  5, -5 } },
+        // right
+        { { 5, -5, -5 }, { 5,  5,  5 }, { 5, -5,  5 } },
+        { { 5, -5, -5 }, { 5,  5, -5 }, { 5,  5,  5 } },
+        // top
+        { { -5, 5, -5 }, { -5, 5,  5 }, {  5, 5,  5 } },
+        { { -5, 5, -5 }, {  5, 5,  5 }, {  5, 5, -5 } },
+        // bottom
+        { { -5, -5, -5 }, {  5, -5,  5 }, { -5, -5,  5 } },
+        { { -5, -5, -5 }, {  5, -5, -5 }, {  5, -5,  5 } }
     };
 
-    triangle test2 = {
-        .v1 = {10, 10, 10},
-        .v2 = {20, 50, 10},
-        .v3 = {50, 20, 10}
-    };
-    
-    draw_triangle(test, 0);
-    draw_filled_triangle(test2, 255);
+    for (int i = 0; i < 12; i++) {
+        cube_tris[i] = cube_data[i];
+    }
 
+    object cube_obj = {
+        .triangles = cube_tris,
+        .triangle_count = 12,
+        .rx = 0.5f,
+        .ry = 0.7f,
+        .rz = 0.0f,
+        .position = {0.0f, 0.0f, 0.0f, 1.0f}
+    };
+
+    camera cam = {
+        .position = {0, 0, -30},
+        .rx = 0.0f,
+        .ry = 0.0f,
+        .rz = 0.0f
+    };
+
+    float cuberx = 0.0f;
+    float cubery = 0.0f;
+    float cuberz = 0.0f;
+
+    while(1){
+    clear_console();
+    clear_buffer();
+
+    cube_obj.rx = cuberx;
+    cube_obj.ry = cubery;
+    cube_obj.rz = cuberz;
+    cuberx += 0.1f;
+    cubery += 0.2f;
+    cuberz += 0.1f;
+    render_object(cube_obj, cam, 255);
     render_buffer();
+
+    usleep(100000);
+}
+
+    free(cube_tris);
     return 0;
 }
