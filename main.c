@@ -10,7 +10,11 @@
 #define WIDTH  230
 #define HEIGHT 110
 
+#define PI 3.14f
+
 uint8_t buffer[WIDTH * HEIGHT];
+float zbuffer[WIDTH * HEIGHT];
+char strBuffer[(WIDTH * HEIGHT * 17) + (HEIGHT * 5) + 1];
 
 uint8_t gray_to_ansi(uint8_t val) {
     return 232 + (val * 23 / 255);
@@ -45,7 +49,9 @@ typedef struct {
     vec4 position;
 } object;
 
+
 void render_buffer() {
+    int i = 0;
     for (int y = 0; y < HEIGHT - 1; y += 2) {
         for (int x = 0; x < WIDTH; ++x) {
             int top_index = y * WIDTH + x;
@@ -57,10 +63,18 @@ void render_buffer() {
             uint8_t fg = gray_to_ansi(top);
             uint8_t bg = gray_to_ansi(bottom);
 
-            printf("\033[38;5;%u;48;5;%um▀", fg, bg);
+            // Formatowanie całej sekwencji ANSI i znaku '▀'
+            i += snprintf(&strBuffer[i], sizeof(strBuffer) - i,
+                          "\033[38;5;%u;48;5;%um▀", fg, bg);
         }
-        printf("\033[0m\n");
+
+        // Resetowanie formatowania + nowa linia
+        i += snprintf(&strBuffer[i], sizeof(strBuffer) - i, "\033[0m\n");
     }
+
+    // Na końcu zerowanie bufora i wypisanie całości
+    strBuffer[i] = '\0';
+    printf("%s", strBuffer);
 }
 
 void fill_gradient() {
@@ -88,10 +102,27 @@ int put_pixel(int16_t x, int16_t y, uint8_t value) {
     return 0;
 }
 
+int put_pixel_depth(int16_t x, int16_t y, float depth, uint8_t value) {
+    if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return 1;
+
+    int index = y * WIDTH + x;
+    if (depth < zbuffer[index]) {
+        zbuffer[index] = depth;
+        buffer[index] = value;
+    }
+
+    return 0;
+}
+
 void init_buffer(){
 	for(int i=0; i<WIDTH*HEIGHT; i++){
 		buffer[i] = 0;
 	}
+}
+void init_z_buffer(){
+    for(int i = 0; i < WIDTH * HEIGHT; i++){
+        zbuffer[i] = INFINITY;
+    }
 }
 
 void draw_line(int x0, int y0, int x1, int y1, uint8_t value) {
@@ -157,6 +188,22 @@ void draw_scanline(int y, int x_start, int x_end, uint8_t brightness) {
     }
 }
 
+void draw_scanline_z(int y, int x_start, float z_start, int x_end, float z_end, uint8_t brightness) {
+    if (y < 0 || y >= HEIGHT) return;
+
+    if (x_start > x_end) {
+        int tmp_x = x_start; x_start = x_end; x_end = tmp_x;
+        float tmp_z = z_start; z_start = z_end; z_end = tmp_z;
+    }
+
+    float dz = (x_end - x_start) == 0 ? 0 : (z_end - z_start) / (x_end - x_start);
+
+    for (int x = x_start; x <= x_end; x++) {
+        float z = z_start + (x - x_start) * dz;
+        put_pixel_depth(x, y, z, brightness);
+    }
+}
+
 void draw_filled_triangle(triangle t, uint8_t brightness) {
     vec4 v1 = t.v1, v2 = t.v2, v3 = t.v3;
 
@@ -176,6 +223,34 @@ void draw_filled_triangle(triangle t, uint8_t brightness) {
                  : interpolate(v1.y, v1.x, v2.y, v2.x, y);
 
         draw_scanline(y, (int)xa, (int)xb, brightness);
+    }
+}
+
+void draw_filled_triangle_z(triangle t, uint8_t brightness) {
+    vec4 v1 = t.v1, v2 = t.v2, v3 = t.v3;
+
+    if (v1.y > v2.y) swap_vec4(&v1, &v2);
+    if (v1.y > v3.y) swap_vec4(&v1, &v3);
+    if (v2.y > v3.y) swap_vec4(&v2, &v3);
+
+    int y_start = (int)ceilf(v1.y);
+    int y_end   = (int)floorf(v3.y);
+
+    for (int y = y_start; y <= y_end; y++) {
+        int is_bottom_half = y > v2.y || v2.y == v1.y;
+
+        float xa = interpolate(v1.y, v1.x, v3.y, v3.x, y);
+        float za = interpolate(v1.y, v1.z, v3.y, v3.z, y);
+
+        float xb = is_bottom_half
+                 ? interpolate(v2.y, v2.x, v3.y, v3.x, y)
+                 : interpolate(v1.y, v1.x, v2.y, v2.x, y);
+
+        float zb = is_bottom_half
+                 ? interpolate(v2.y, v2.z, v3.y, v3.z, y)
+                 : interpolate(v1.y, v1.z, v2.y, v2.z, y);
+
+        draw_scanline_z(y, (int)xa, za, (int)xb, zb, brightness);
     }
 }
 
@@ -235,7 +310,6 @@ triangle transform_triangle(triangle t, camera cam) {
 
         v = rotate_vec(v, cam.rx, cam.ry, cam.rz);
 
-        // rzutowanie
         v = project(v);
 
         *(out_verts[i]) = v;
@@ -264,11 +338,65 @@ triangle transform_single_triangle(triangle t, vec4 pos, float rx, float ry, flo
     return out;
 }
 
-void render_object(object obj, camera cam, uint8_t brightness) {
+vec4 calculate_normal(triangle t) {
+    vec4 u = {
+        t.v2.x - t.v1.x,
+        t.v2.y - t.v1.y,
+        t.v2.z - t.v1.z,
+        0
+    };
+    
+    vec4 v = {
+        t.v3.x - t.v1.x,
+        t.v3.y - t.v1.y,
+        t.v3.z - t.v1.z,
+        0
+    };
+
+    vec4 normal = {
+        u.y * v.z - u.z * v.y,
+        u.z * v.x - u.x * v.z,
+        u.x * v.y - u.y * v.x,
+        0
+    };
+
+    float length = sqrtf(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z);
+    if (length > 0) {
+        normal.x /= length;
+        normal.y /= length;
+        normal.z /= length;
+    }
+    
+    return normal;
+}
+
+
+void render_object(object obj, camera cam, uint8_t base_brightness) {
+    vec4 light_dir = {2, 1, -1, 0};
+    float light_len = sqrtf(light_dir.x*light_dir.x + light_dir.y*light_dir.y + light_dir.z*light_dir.z);
+    if (light_len > 0) {
+        light_dir.x /= light_len;
+        light_dir.y /= light_len;
+        light_dir.z /= light_len;
+    }
+    
     for (int i = 0; i < obj.triangle_count; ++i) {
         triangle transformed = transform_single_triangle(obj.triangles[i], obj.position, obj.rx, obj.ry, obj.rz);
         triangle projected = transform_triangle(transformed, cam);
-        draw_triangle(projected, brightness);
+
+        vec4 normal = calculate_normal(transformed);
+        
+        float intensity = 
+            normal.x * light_dir.x + 
+            normal.y * light_dir.y + 
+            normal.z * light_dir.z;
+        
+        intensity = fmaxf(intensity, 0.1f);
+        intensity = fminf(intensity, 1.0f);
+        
+        uint8_t brightness = (uint8_t)(base_brightness * intensity);
+        
+        draw_filled_triangle_z(projected, brightness);
     }
 }
 
@@ -282,9 +410,55 @@ void clear_console() {
     printf("\033[2J\033[H");
 }
 
+//donut
+
+vec4 compute_torus_vertex(float R, float r, float theta, float phi) {
+    vec4 v;
+    v.x = (R + r * cosf(phi)) * cosf(theta);
+    v.y = (R + r * cosf(phi)) * sinf(theta);
+    v.z = r * sinf(phi);
+    v.w = 1.0f;
+    return v;
+}
+
+object create_donut(float major_radius, float minor_radius, int steps_theta, int steps_phi) {
+    int num_tris = 2 * steps_theta * steps_phi;
+    triangle* tris = malloc(num_tris * sizeof(triangle));
+    
+    int idx = 0;
+    for (int i = 0; i < steps_theta; i++) {
+        float theta1 = i * 2 * PI / steps_theta;
+        float theta2 = ((i + 1) % steps_theta) * 2 * PI / steps_theta;
+        
+        for (int j = 0; j < steps_phi; j++) {
+            float phi1 = j * 2 * PI / steps_phi;
+            float phi2 = ((j + 1) % steps_phi) * 2 * PI / steps_phi;
+            
+            vec4 v1 = compute_torus_vertex(major_radius, minor_radius, theta1, phi1);
+            vec4 v2 = compute_torus_vertex(major_radius, minor_radius, theta2, phi1);
+            vec4 v3 = compute_torus_vertex(major_radius, minor_radius, theta2, phi2);
+            vec4 v4 = compute_torus_vertex(major_radius, minor_radius, theta1, phi2);
+            
+            // Pierwszy trójkąt
+            tris[idx++] = (triangle){v1, v2, v3};
+            // Drugi trójkąt
+            tris[idx++] = (triangle){v1, v3, v4};
+        }
+    }
+    
+    return (object){
+        .triangles = tris,
+        .triangle_count = num_tris,
+        .rx = 0, .ry = 0, .rz = 0,
+        .position = {0,0,0,1}
+    };
+}
+
+
 int main() {
 
     init_buffer();
+    init_z_buffer();
 
     triangle* cube_tris = malloc(sizeof(triangle) * 12);
 
@@ -316,38 +490,56 @@ int main() {
     object cube_obj = {
         .triangles = cube_tris,
         .triangle_count = 12,
-        .rx = 0.5f,
-        .ry = 0.7f,
-        .rz = 0.0f,
-        .position = {0.0f, 0.0f, 0.0f, 1.0f}
-    };
-
-    camera cam = {
-        .position = {0, 0, -30},
         .rx = 0.0f,
         .ry = 0.0f,
-        .rz = 0.0f
+        .rz = 0.0f,
+        .position = {30, 0.0f, 15, 1.0f}
     };
+
 
     float cuberx = 0.0f;
     float cubery = 0.0f;
     float cuberz = 0.0f;
 
+
+    object donut = create_donut(10.0f, 3.0f, 12, 8);
+    camera cam = {
+        .position = {0, 0, -30},
+        .rx = 0, .ry = 0, .rz = 0
+    };
+
+    float cubedir = 1;
+
     while(1){
-    clear_console();
-    clear_buffer();
+        clear_buffer();
+        init_z_buffer();
 
-    cube_obj.rx = cuberx;
-    cube_obj.ry = cubery;
-    cube_obj.rz = cuberz;
-    cuberx += 0.1f;
-    cubery += 0.2f;
-    cuberz += 0.1f;
-    render_object(cube_obj, cam, 255);
-    render_buffer();
+        donut.rx = cuberx;
+        donut.ry = cubery;
+        donut.rz = cuberz;
+        cube_obj.rx = cuberx*2;
+        cube_obj.ry = cubery/2;
+        cube_obj.rz = cuberz/2;
+        cuberx += 0.1f/10;
+        cubery += 0.1f/10;
+        cuberz += 0.1f/10;
 
-    usleep(100000);
-}
+        if(cube_obj.position.x >= 30){
+            cubedir = -1.0f/10;
+        }
+        if(cube_obj.position.x <= -30){
+            cubedir = 1.0f/10;
+        }
+        cube_obj.position.x += cubedir;
+
+        render_object(donut, cam, 200);
+        render_object(cube_obj, cam, 200);
+
+        clear_console();
+        render_buffer();
+
+        usleep(10000);
+    }
 
     free(cube_tris);
     return 0;
