@@ -7,6 +7,7 @@
 
 #define WIDTH  230
 #define HEIGHT 110
+#define USE_ORTHOGRAPHIC 0
 
 #define PI 3.14f
 
@@ -36,6 +37,8 @@ typedef struct
     float rx;
     float ry;
     float rz;
+    float fov;
+    
 } camera;
 
 typedef struct 
@@ -250,14 +253,15 @@ vec4 rotate_vec(vec4 v, float rx, float ry, float rz) {
 }
 
 //applies perspective projection matrix to a vec4
-vec4 project(vec4 v) {
+vec4 project(vec4 v, float fov) {
     if (v.z == 0.0f) v.z = 0.01f;
     vec4 projected;
 
     float aspect = (float)WIDTH / (float)HEIGHT;
+    float tan_half_fov = tanf(fov / 2.0f); 
 
-    projected.x = (v.x / v.z) * WIDTH / 2 + WIDTH / 2;
-    projected.y = (v.y / v.z) * HEIGHT / 2 * aspect + HEIGHT / 2;
+    projected.x = (v.x / (aspect * tan_half_fov * v.z)) * (WIDTH / 2) + WIDTH / 2;
+    projected.y = (v.y / (tan_half_fov * v.z)) * (HEIGHT / 2) + HEIGHT / 2;
 
     projected.z = v.z;
     projected.w = 1.0f;
@@ -265,17 +269,15 @@ vec4 project(vec4 v) {
 }
 
 //aplpiise ortographic projection matrix to vec4
-vec4 project_orth(vec4 v) {
+vec4 project_orth(vec4 v, float zoom) {
     vec4 projected;
-
     float aspect = (float)WIDTH / (float)HEIGHT;
 
-    projected.x = v.x * (WIDTH / 2) + WIDTH / 2;
-    projected.y = v.y * (HEIGHT / 2) * aspect + HEIGHT / 2;
+    projected.x = (v.x * zoom) * (WIDTH / 2.0f) + WIDTH / 2.0f;
+    projected.y = (v.y * zoom) * (HEIGHT / 2.0f) * aspect + HEIGHT / 2.0f;
 
     projected.z = v.z;
     projected.w = 1.0f;
-
     return projected;
 }
 
@@ -301,8 +303,12 @@ triangle transform_triangle(triangle t, vec4 obj_pos, float rx, float ry, float 
 
         v = rotate_vec(v, cam.rx, cam.ry, cam.rz);
 
-        v = project(v);
-
+        if(USE_ORTHOGRAPHIC){
+            v = project_orth(v, cam.fov);
+        } else {
+            v = project(v, cam.fov);
+        }
+        
         *(out_verts[i]) = v;
     }
 
@@ -488,7 +494,7 @@ int main() {
         .rx = 0.0f,
         .ry = 0.0f,
         .rz = 0.0f,
-        .position = {30, 0.0f, 15, 1.0f}
+        .position = {30, 0.0f, 0, 1.0f}
     };
 
 
@@ -499,40 +505,34 @@ int main() {
 
     object donut = create_donut(10.0f, 3.0f, 12, 8);
     camera cam = {
-        .position = {0, 0, -30},
-        .rx = 0, .ry = 0, .rz = 0
+        .position = {0, 0, -35},
+        .rx = 0, .ry = 0, .rz = 0,
+        .fov = PI/3
     };
 
-    float cubedir = 1;
+    float orbit_radius = 25.0f;
+    float orbit_speed = 0.01f;
+    float angle = 0.0f;
 
     while(1){
         clear_buffer();
         init_z_buffer();
 
-        donut.rx = cuberx;
-        donut.ry = cubery;
-        donut.rz = cuberz;
-        cube_obj.rx = cuberx*2;
-        cube_obj.ry = cubery/2;
-        cube_obj.rz = cuberz/2;
-        cuberx += 0.1f/10;
-        cubery += 0.1f/10;
-        cuberz += 0.1f/10;
+        angle += orbit_speed;
+        cube_obj.position.x = orbit_radius * cosf(angle);
+        cube_obj.position.z = orbit_radius * sinf(angle);
 
-        if(cube_obj.position.x >= 30){
-            cubedir = -1.0f/10;
-        }
-        if(cube_obj.position.x <= -30){
-            cubedir = 1.0f/10;
-        }
-        cube_obj.position.x += cubedir;
+        cube_obj.rx = angle * 2;
+        cube_obj.ry = angle * 1.5f;
+        
+        donut.rx += 0.01f;
+        donut.ry += 0.01f;
 
         render_object(donut, cam, 200);
         render_object(cube_obj, cam, 200);
 
         clear_console();
         render_buffer();
-
         usleep(10000);
     }
 
