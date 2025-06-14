@@ -10,7 +10,7 @@ void cgedraw_draw_line(cgebuffer_screen* scr,int x0, int y0, float z0, int x1, i
 
 void cgedraw_draw_triangle(cgebuffer_screen* scr,cgemodel_triangle t, uint8_t brightness);
 
-void cgedraw_draw_scanline(cgebuffer_screen* scr,int y, int x_start, float z_start, int x_end, float z_end, uint8_t brightness);
+//void cgedraw_draw_scanline(cgebuffer_screen* scr,int y, int x_start, float z_start, int x_end, float z_end, uint8_t brightness);
 
 void cgedraw_draw_filled_triangle(cgebuffer_screen* scr,cgemodel_triangle t, uint8_t brightness);
 
