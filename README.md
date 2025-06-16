@@ -193,9 +193,9 @@ A basic usage example is provided in the file:
 This example serves as a reference for how to set up a screen buffer, define geometry, transform it, and render it to the console.
 
 you can compile and run it using the following command:
-'''
+```
 gcc main.c cgebuffer.c cgetransform.c cgedraw.c -o main.out -lm && ./main.out
-'''
+```
 
 
 
